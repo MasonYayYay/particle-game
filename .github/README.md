@@ -1,3 +1,3 @@
 # planed updates ---
 
-* easy mod sport
+* mod support
