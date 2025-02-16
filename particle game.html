@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Optimized Sand Simulation with Adjustable Size</title>
+  <style>
+    body {
+      margin: 0;
+      overflow: hidden;
+      background: #222;
+    }
+    /* Main Menu Overlay */
+    #mainMenu {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.85);
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      color: #fff;
+      font-family: Arial, sans-serif;
+    }
+    #mainMenu h1 {
+      font-size: 48px;
+      margin-bottom: 20px;
+    }
+    #mainMenu button {
+      font-size: 20px;
+      padding: 10px 20px;
+      margin: 10px;
+      cursor: pointer;
+    }
+    /* Options Menu Overlay */
+    #optionsMenu {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.85);
+      z-index: 100;
+      display: none;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      color: #fff;
+      font-family: Arial, sans-serif;
+    }
+    #optionsMenu h1 {
+      font-size: 48px;
+      margin-bottom: 20px;
+    }
+    #optionsMenu label, #optionsMenu input, #optionsMenu button {
+      font-size: 18px;
+      margin: 10px;
+    }
+    /* UI Controls (top left) */
+    #ui {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 10;
+      background: rgba(0,0,0,0.6);
+      padding: 10px;
+      border-radius: 5px;
+      color: #fff;
+      font-family: Arial, sans-serif;
+    }
+    #ui select, #ui button {
+      margin: 5px 0;
+      font-size: 14px;
+    }
+    /* FPS Counter (top right) */
+    #fpsCounter {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      z-index: 10;
+      background: rgba(0,0,0,0.6);
+      color: #fff;
+      padding: 5px 10px;
+      border-radius: 5px;
+      font-family: Arial, sans-serif;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <!-- Main Menu Overlay -->
+  <div id="mainMenu">
+    <h1>Sand Simulation</h1>
+    <p>Paint elements and watch them interact.</p>
+    <button id="startButton">Start Simulation</button>
+    <button id="optionsButton">Options</button>
+  </div>
+
+  <!-- Options Menu Overlay -->
+  <div id="optionsMenu">
+    <h1>Options</h1>
+    <label for="simSizeSlider">Simulation Size (Cell Size): <span id="simSizeDisplay">8</span></label>
+    <input type="range" id="simSizeSlider" min="4" max="20" value="8">
+    <br>
+    <button id="backButton">Back</button>
+  </div>
+
+  <!-- UI Controls -->
+  <div id="ui">
+    <label for="particleType">Particle:</label>
+    <select id="particleType">
+      <option value="sand">Sand</option>
+      <option value="water">Water</option>
+      <option value="rock">Rock</option>
+      <option value="wood">Wood</option>
+      <option value="fire">Fire</option>
+      <option value="smoke">Smoke</option>
+      <option value="seed">Seed</option>
+      <option value="plant">Plant</option>
+      <option value="eraser">Eraser</option>
+    </select>
+    <br>
+    <p>Brush Size: <span id="brushSizeDisplay">1</span></p>
+    <button id="clearBtn">Clear</button>
+    <p>(Scroll wheel to adjust brush size)</p>
+  </div>
+
+  <!-- FPS Counter -->
+  <div id="fpsCounter">FPS: 0</div>
+  
+  <!-- Simulation Canvas -->
+  <canvas id="simulationCanvas"></canvas>
+  
+  <script>
+    (function() {
+      // --- Particle Type Constants ---
+      const PARTICLE_EMPTY = 0;
+      const PARTICLE_SAND = 1;
+      const PARTICLE_WATER = 2;
+      const PARTICLE_ROCK = 3;
+      const PARTICLE_WOOD = 4;
+      const PARTICLE_FIRE = 5;
+      const PARTICLE_SMOKE = 6;
+      const PARTICLE_SEED = 7;
+      const PARTICLE_PLANT = 8;
+      
+      // Colors for each particle type (indices correspond to constants)
+      const particleColors = [
+        "#000000", // empty
+        "#c2b280", // sand
+        "#3498db", // water
+        "#7f8c8d", // rock
+        "#8B4513", // wood
+        "#ff4500", // fire
+        "#555555", // smoke
+        "#A0522D", // seed
+        "#228B22"  // plant
+      ];
+      
+      // Mapping from dropdown string to particle type constant
+      const particleMapping = {
+        "sand": PARTICLE_SAND,
+        "water": PARTICLE_WATER,
+        "rock": PARTICLE_ROCK,
+        "wood": PARTICLE_WOOD,
+        "fire": PARTICLE_FIRE,
+        "smoke": PARTICLE_SMOKE,
+        "seed": PARTICLE_SEED,
+        "plant": PARTICLE_PLANT,
+        "eraser": PARTICLE_EMPTY
+      };
+      
+      // --- Simulation Variables ---
+      let cellSize = 8; // Default cell size (can be adjusted via options)
+      let cols, rows;
+      let grid; // Will be a Uint8Array (flat grid of size rows*cols)
+      let brushSize = 1; // In grid cells
+      const maxBrushSize = 20;
+      
+      const canvas = document.getElementById("simulationCanvas");
+      const ctx = canvas.getContext("2d");
+      
+      // --- Mouse and FPS State ---
+      let mouseX = null, mouseY = null;
+      let drawing = false;
+      const fpsCounter = document.getElementById("fpsCounter");
+      let lastFrameTime = performance.now();
+      
+      // --- Grid Initialization ---
+      function resizeCanvas() {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        cols = Math.floor(canvas.width / cellSize);
+        rows = Math.floor(canvas.height / cellSize);
+        grid = new Uint8Array(cols * rows);
+        grid.fill(PARTICLE_EMPTY);
+      }
+      window.addEventListener("resize", resizeCanvas);
+      resizeCanvas();
+      
+      // --- Simulation Update (Flat Array Version) ---
+      function updateGrid() {
+        // Loop from bottom (largest row index) to top.
+        for (let r = rows - 1; r >= 0; r--) {
+          for (let c = 0; c < cols; c++) {
+            let i = r * cols + c;
+            let type = grid[i];
+            if (type === PARTICLE_EMPTY || type === PARTICLE_ROCK) continue;
+            
+            // Helper: index for cell at (nr, nc)
+            const index = (nr, nc) => nr * cols + nc;
+            
+            // Sand
+            if (type === PARTICLE_SAND) {
+              if (r + 1 < rows) {
+                let below = grid[index(r + 1, c)];
+                if (below === PARTICLE_EMPTY || below === PARTICLE_WATER) {
+                  // Swap with below
+                  grid[index(r + 1, c)] = PARTICLE_SAND;
+                  grid[i] = below;
+                } else {
+                  // Try diagonals
+                  let move = false;
+                  if (Math.random() < 0.5) {
+                    if (c - 1 >= 0 && grid[index(r + 1, c - 1)] === PARTICLE_EMPTY) {
+                      grid[index(r + 1, c - 1)] = PARTICLE_SAND;
+                      grid[i] = PARTICLE_EMPTY;
+                      move = true;
+                    } else if (c + 1 < cols && grid[index(r + 1, c + 1)] === PARTICLE_EMPTY) {
+                      grid[index(r + 1, c + 1)] = PARTICLE_SAND;
+                      grid[i] = PARTICLE_EMPTY;
+                      move = true;
+                    }
+                  } else {
+                    if (c + 1 < cols && grid[index(r + 1, c + 1)] === PARTICLE_EMPTY) {
+                      grid[index(r + 1, c + 1)] = PARTICLE_SAND;
+                      grid[i] = PARTICLE_EMPTY;
+                      move = true;
+                    } else if (c - 1 >= 0 && grid[index(r + 1, c - 1)] === PARTICLE_EMPTY) {
+                      grid[index(r + 1, c - 1)] = PARTICLE_SAND;
+                      grid[i] = PARTICLE_EMPTY;
+                      move = true;
+                    }
+                  }
+                }
+              }
+            }
+            // Water
+            else if (type === PARTICLE_WATER) {
+              if (r + 1 < rows && grid[index(r + 1, c)] === PARTICLE_EMPTY) {
+                grid[index(r + 1, c)] = PARTICLE_WATER;
+                grid[i] = PARTICLE_EMPTY;
+              } else {
+                if (Math.random() < 0.5) {
+                  if (c - 1 >= 0 && grid[index(r, c - 1)] === PARTICLE_EMPTY) {
+                    grid[index(r, c - 1)] = PARTICLE_WATER;
+                    grid[i] = PARTICLE_EMPTY;
+                  } else if (c + 1 < cols && grid[index(r, c + 1)] === PARTICLE_EMPTY) {
+                    grid[index(r, c + 1)] = PARTICLE_WATER;
+                    grid[i] = PARTICLE_EMPTY;
+                  }
+                } else {
+                  if (c + 1 < cols && grid[index(r, c + 1)] === PARTICLE_EMPTY) {
+                    grid[index(r, c + 1)] = PARTICLE_WATER;
+                    grid[i] = PARTICLE_EMPTY;
+                  } else if (c - 1 >= 0 && grid[index(r, c - 1)] === PARTICLE_EMPTY) {
+                    grid[index(r, c - 1)] = PARTICLE_WATER;
+                    grid[i] = PARTICLE_EMPTY;
+                  }
+                }
+              }
+            }
+            // Wood
+            else if (type === PARTICLE_WOOD) {
+              let caughtFire = false;
+              for (let dr = -1; dr <= 1 && !caughtFire; dr++) {
+                for (let dc = -1; dc <= 1 && !caughtFire; dc++) {
+                  if (dr === 0 && dc === 0) continue;
+                  let nr = r + dr, nc = c + dc;
+                  if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) {
+                    if (grid[index(nr, nc)] === PARTICLE_FIRE) caughtFire = true;
+                  }
+                }
+              }
+              if (caughtFire && Math.random() < 0.02) {
+                grid[i] = PARTICLE_FIRE;
+                continue;
+              }
+            }
+            // Seed
+            else if (type === PARTICLE_SEED) {
+              if (r + 1 < rows && grid[index(r + 1, c)] === PARTICLE_EMPTY && Math.random() < 0.3) {
+                grid[index(r + 1, c)] = PARTICLE_SEED;
+                grid[i] = PARTICLE_EMPTY;
+              } else if ((r + 1 >= rows || grid[index(r + 1, c)] !== PARTICLE_EMPTY) && Math.random() < 0.01) {
+                grid[i] = PARTICLE_PLANT;
+              }
+            }
+            // Plant
+            else if (type === PARTICLE_PLANT) {
+              if (r - 1 >= 0 && grid[index(r - 1, c)] === PARTICLE_EMPTY && Math.random() < 0.005) {
+                grid[index(r - 1, c)] = PARTICLE_PLANT;
+              }
+              // Spawn seed to left or right.
+              const directions = [[0, -1], [0, 1]];
+              for (let d of directions) {
+                let nr = r + d[0], nc = c + d[1];
+                if (nr >= 0 && nr < rows && nc >= 0 && nc < cols &&
+                    grid[index(nr, nc)] === PARTICLE_EMPTY && Math.random() < 0.002) {
+                  grid[index(nr, nc)] = PARTICLE_SEED;
+                }
+              }
+            }
+            // Fire
+            else if (type === PARTICLE_FIRE) {
+              let adjacentWater = false;
+              for (let dr = -1; dr <= 1 && !adjacentWater; dr++) {
+                for (let dc = -1; dc <= 1 && !adjacentWater; dc++) {
+                  if (dr === 0 && dc === 0) continue;
+                  let nr = r + dr, nc = c + dc;
+                  if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) {
+                    if (grid[index(nr, nc)] === PARTICLE_WATER) adjacentWater = true;
+                  }
+                }
+              }
+              if (adjacentWater && Math.random() < 0.1) {
+                grid[i] = PARTICLE_SMOKE;
+                continue;
+              }
+              if (r - 1 >= 0 && grid[index(r - 1, c)] === PARTICLE_EMPTY && Math.random() < 0.3) {
+                grid[index(r - 1, c)] = PARTICLE_FIRE;
+                grid[i] = PARTICLE_EMPTY;
+              } else if (r - 1 >= 0 && Math.random() < 0.2) {
+                if (c - 1 >= 0 && grid[index(r - 1, c - 1)] === PARTICLE_EMPTY) {
+                  grid[index(r - 1, c - 1)] = PARTICLE_FIRE;
+                  grid[i] = PARTICLE_EMPTY;
+                } else if (c + 1 < cols && grid[index(r - 1, c + 1)] === PARTICLE_EMPTY) {
+                  grid[index(r - 1, c + 1)] = PARTICLE_FIRE;
+                  grid[i] = PARTICLE_EMPTY;
+                }
+              }
+              if (Math.random() < 0.002) {
+                grid[i] = PARTICLE_SMOKE;
+              }
+            }
+            // Smoke
+            else if (type === PARTICLE_SMOKE) {
+              if (r - 1 >= 0 && grid[index(r - 1, c)] === PARTICLE_EMPTY && Math.random() < 0.3) {
+                grid[index(r - 1, c)] = PARTICLE_SMOKE;
+                grid[i] = PARTICLE_EMPTY;
+              } else if (r - 1 >= 0 && Math.random() < 0.1) {
+                if (c - 1 >= 0 && grid[index(r - 1, c - 1)] === PARTICLE_EMPTY) {
+                  grid[index(r - 1, c - 1)] = PARTICLE_SMOKE;
+                  grid[i] = PARTICLE_EMPTY;
+                } else if (c + 1 < cols && grid[index(r - 1, c + 1)] === PARTICLE_EMPTY) {
+                  grid[index(r - 1, c + 1)] = PARTICLE_SMOKE;
+                  grid[i] = PARTICLE_EMPTY;
+                }
+              }
+              if (Math.random() < 0.005) {
+                grid[i] = PARTICLE_EMPTY;
+              }
+            }
+          }
+        }
+      }
+      
+      // --- Rendering ---
+      function drawGrid() {
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            const i = r * cols + c;
+            ctx.fillStyle = particleColors[grid[i]];
+            ctx.fillRect(c * cellSize, r * cellSize, cellSize, cellSize);
+          }
+        }
+      }
+      
+      function drawBrushOverlay() {
+        if (mouseX === null || mouseY === null) return;
+        const radius = (brushSize * cellSize) / 2;
+        ctx.beginPath();
+        ctx.arc(mouseX, mouseY, radius, 0, Math.PI * 2);
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.5)";
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+      
+      // --- Main Loop with FPS ---
+      function simulationLoop() {
+        const now = performance.now();
+        const delta = now - lastFrameTime;
+        const fps = 1000 / delta;
+        lastFrameTime = now;
+        fpsCounter.innerText = "FPS: " + fps.toFixed(1);
+        
+        updateGrid();
+        drawGrid();
+        drawBrushOverlay();
+        requestAnimationFrame(simulationLoop);
+      }
+      
+      // --- Mouse Painting ---
+      function paintAtMouse(e) {
+        const rect = canvas.getBoundingClientRect();
+        mouseX = e.clientX - rect.left;
+        mouseY = e.clientY - rect.top;
+        const c = Math.floor(mouseX / cellSize);
+        const r = Math.floor(mouseY / cellSize);
+        let selectedType = document.getElementById("particleType").value;
+        selectedType = particleMapping[selectedType];
+        const half = Math.floor(brushSize / 2);
+        for (let i = r - half; i < r - half + brushSize; i++) {
+          for (let j = c - half; j < c - half + brushSize; j++) {
+            if (i >= 0 && i < rows && j >= 0 && j < cols) {
+              grid[i * cols + j] = selectedType;
+            }
+          }
+        }
+      }
+      
+      canvas.addEventListener("mousedown", (e) => {
+        drawing = true;
+        paintAtMouse(e);
+      });
+      canvas.addEventListener("mousemove", (e) => {
+        const rect = canvas.getBoundingClientRect();
+        mouseX = e.clientX - rect.left;
+        mouseY = e.clientY - rect.top;
+        if (drawing) paintAtMouse(e);
+      });
+      canvas.addEventListener("mouseup", () => drawing = false);
+      canvas.addEventListener("mouseleave", () => {
+        drawing = false;
+        mouseX = null;
+        mouseY = null;
+      });
+      
+      canvas.addEventListener("wheel", (e) => {
+        e.preventDefault();
+        if (e.deltaY < 0) {
+          brushSize = Math.min(brushSize + 1, maxBrushSize);
+        } else {
+          brushSize = Math.max(brushSize - 1, 1);
+        }
+        document.getElementById("brushSizeDisplay").innerText = brushSize;
+      });
+      
+      document.getElementById("clearBtn").addEventListener("click", () => {
+        grid.fill(PARTICLE_EMPTY);
+      });
+      
+      // --- Main Menu and Options ---
+      const mainMenu = document.getElementById("mainMenu");
+      const optionsMenu = document.getElementById("optionsMenu");
+      const startButton = document.getElementById("startButton");
+      const optionsButton = document.getElementById("optionsButton");
+      const backButton = document.getElementById("backButton");
+      const simSizeSlider = document.getElementById("simSizeSlider");
+      const simSizeDisplay = document.getElementById("simSizeDisplay");
+      
+      simSizeSlider.addEventListener("input", () => {
+        simSizeDisplay.innerText = simSizeSlider.value;
+      });
+      
+      optionsButton.addEventListener("click", () => {
+        mainMenu.style.display = "none";
+        optionsMenu.style.display = "flex";
+      });
+      
+      backButton.addEventListener("click", () => {
+        cellSize = parseInt(simSizeSlider.value, 10);
+        resizeCanvas();
+        optionsMenu.style.display = "none";
+        mainMenu.style.display = "flex";
+      });
+      
+      startButton.addEventListener("click", () => {
+        mainMenu.style.display = "none";
+        simulationLoop();
+      });
+    })();
+  </script>
+</body>
+</html>
