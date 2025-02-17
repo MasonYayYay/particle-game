@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Optimized Sand Simulation with Mod Support</title>
+  <title>Optimized Sand Simulation with Extended ModAPI</title>
   <style>
     body {
       margin: 0;
@@ -148,8 +148,9 @@
       const PARTICLE_SMOKE = 6;
       const PARTICLE_SEED  = 7;
       const PARTICLE_PLANT = 8;
-
-      // Colors for each particle type (indices correspond to constants)
+      // New particle types registered by mods will get constants starting at index 9.
+      
+      // Colors for built‑in particle types
       const particleColors = [
         "#000000", // empty
         "#c2b280", // sand
@@ -161,8 +162,8 @@
         "#A0522D", // seed
         "#228B22"  // plant
       ];
-
-      // Mapping from dropdown string to particle constant
+      
+      // Mapping from dropdown string to built‑in particle constant
       const particleMapping = {
         "sand": PARTICLE_SAND,
         "water": PARTICLE_WATER,
@@ -175,15 +176,62 @@
         "eraser": PARTICLE_EMPTY
       };
 
-      // --- Mod API (Global Object) ---
+      // --- Extended ModAPI ---
       window.ModAPI = {
         updateHooks: [],
         drawingHooks: [],
+        // Hooks for modded particle types: key = particle constant
+        particleUpdates: {},
+        particleDrawings: {},
+        // Settings dictionary for mod settings
+        settings: {},
+        // Menus: store mod-added menus
+        menus: {},
+        
         registerUpdateHook: function(hook) {
           this.updateHooks.push(hook);
         },
         registerDrawingHook: function(hook) {
           this.drawingHooks.push(hook);
+        },
+        addMenu: function(menuId, menuTitle, menuContentHTML) {
+          // Create a new overlay menu div with a close button.
+          const menuDiv = document.createElement("div");
+          menuDiv.id = "modMenu_" + menuId;
+          menuDiv.style.position = "fixed";
+          menuDiv.style.top = "0";
+          menuDiv.style.left = "0";
+          menuDiv.style.width = "100%";
+          menuDiv.style.height = "100%";
+          menuDiv.style.background = "rgba(0,0,0,0.85)";
+          menuDiv.style.zIndex = "200";
+          menuDiv.style.display = "none";
+          menuDiv.style.flexDirection = "column";
+          menuDiv.style.justifyContent = "center";
+          menuDiv.style.alignItems = "center";
+          menuDiv.style.color = "#fff";
+          menuDiv.style.fontFamily = "Arial, sans-serif";
+          menuDiv.innerHTML = "<h1>" + menuTitle + "</h1>" + menuContentHTML +
+            "<button onclick='document.getElementById(\"modMenu_" + menuId + "\").style.display=\"none\";'>Close</button>";
+          document.body.appendChild(menuDiv);
+          this.menus[menuId] = menuDiv;
+        },
+        addSetting: function(settingName, defaultValue, onChange) {
+          this.settings[settingName] = defaultValue;
+          // Provide a function to update the setting and call onChange if provided.
+          this.settings[settingName + "_set"] = function(newValue) {
+            window.ModAPI.settings[settingName] = newValue;
+            if (onChange) onChange(newValue);
+          };
+        },
+        registerParticleType: function(name, color, updateFunction, drawingFunction) {
+          // Assign a new constant to this particle type.
+          const newConstant = particleColors.length;
+          particleColors.push(color);
+          particleMapping[name] = newConstant;
+          this.particleUpdates[newConstant] = updateFunction;
+          this.particleDrawings[newConstant] = drawingFunction;
+          return newConstant;
         },
         getGrid: function() { return grid; },
         getCols: function() { return cols; },
@@ -192,9 +240,9 @@
       };
 
       // --- Simulation Variables ---
-      let cellSize = 8; // Default cell size (adjustable via options)
+      let cellSize = 8; // Default cell size (modifiable via Options)
       let cols, rows;
-      let grid; // Flat Uint8Array grid of size cols * rows
+      let grid; // Flat Uint8Array grid (size = cols * rows)
       let brushSize = 1; // In grid cells
       const maxBrushSize = 20;
 
@@ -221,14 +269,13 @@
 
       // --- Simulation Update (Flat Array Version) ---
       function updateGrid() {
-        // Process from bottom to top
+        // Process from bottom (largest row index) to top.
         for (let r = rows - 1; r >= 0; r--) {
           for (let c = 0; c < cols; c++) {
             let i = r * cols + c;
             let type = grid[i];
             if (type === PARTICLE_EMPTY || type === PARTICLE_ROCK) continue;
-
-            // Helper for index at (nr, nc)
+            // Helper: index for (nr, nc)
             const idx = (nr, nc) => nr * cols + nc;
 
             // Sand
@@ -315,8 +362,8 @@
               if (r - 1 >= 0 && grid[idx(r - 1, c)] === PARTICLE_EMPTY && Math.random() < 0.005) {
                 grid[idx(r - 1, c)] = PARTICLE_PLANT;
               }
-              const directions = [[0, -1], [0, 1]];
-              for (let d of directions) {
+              const dirs = [[0, -1], [0, 1]];
+              for (let d of dirs) {
                 let nr = r + d[0], nc = c + d[1];
                 if (nr >= 0 && nr < rows && nc >= 0 && nc < cols &&
                     grid[idx(nr, nc)] === PARTICLE_EMPTY && Math.random() < 0.002) {
@@ -374,10 +421,15 @@
                 grid[i] = PARTICLE_EMPTY;
               }
             }
+            // If the particle type is modded (not built‑in)...
+            else if (ModAPI.particleUpdates[type]) {
+              // Call the mod update function, providing cell coordinates and helper idx.
+              ModAPI.particleUpdates[type](r, c, grid, cols, rows, idx);
+            }
           }
         }
-        // Call any registered mod update hooks
-        window.ModAPI.updateHooks.forEach(hook => hook(grid, cols, rows, cellSize));
+        // Call any registered global mod update hooks.
+        ModAPI.updateHooks.forEach(hook => hook(grid, cols, rows, cellSize));
       }
 
       // --- Rendering Functions ---
@@ -387,12 +439,16 @@
             const i = r * cols + c;
             ctx.fillStyle = particleColors[grid[i]];
             ctx.fillRect(c * cellSize, r * cellSize, cellSize, cellSize);
+            // If there is a mod drawing hook for this particle type, call it.
+            if (ModAPI.particleDrawings[grid[i]]) {
+              ModAPI.particleDrawings[grid[i]](ctx, r, c, cellSize);
+            }
           }
         }
-        // Call any mod drawing hooks
-        window.ModAPI.drawingHooks.forEach(hook => hook(ctx, grid, cols, rows, cellSize));
+        // Call any global mod drawing hooks.
+        ModAPI.drawingHooks.forEach(hook => hook(ctx, grid, cols, rows, cellSize));
       }
-      
+
       function drawBrushOverlay() {
         if (mouseX === null || mouseY === null) return;
         const radius = (brushSize * cellSize) / 2;
@@ -402,7 +458,7 @@
         ctx.lineWidth = 2;
         ctx.stroke();
       }
-      
+
       // --- Main Simulation Loop with FPS ---
       function simulationLoop() {
         const now = performance.now();
@@ -410,13 +466,13 @@
         const fps = 1000 / delta;
         lastFrameTime = now;
         fpsCounter.innerText = "FPS: " + fps.toFixed(1);
-        
+
         updateGrid();
         drawGrid();
         drawBrushOverlay();
         requestAnimationFrame(simulationLoop);
       }
-      
+
       // --- Mouse Painting ---
       function paintAtMouse(e) {
         const rect = canvas.getBoundingClientRect();
@@ -435,7 +491,7 @@
           }
         }
       }
-      
+
       canvas.addEventListener("mousedown", (e) => {
         drawing = true;
         paintAtMouse(e);
@@ -452,7 +508,7 @@
         mouseX = null;
         mouseY = null;
       });
-      
+
       canvas.addEventListener("wheel", (e) => {
         e.preventDefault();
         if (e.deltaY < 0) {
@@ -462,11 +518,11 @@
         }
         document.getElementById("brushSizeDisplay").innerText = brushSize;
       });
-      
+
       document.getElementById("clearBtn").addEventListener("click", () => {
         grid.fill(PARTICLE_EMPTY);
       });
-      
+
       // --- Main Menu and Options ---
       const mainMenu = document.getElementById("mainMenu");
       const optionsMenu = document.getElementById("optionsMenu");
@@ -475,36 +531,36 @@
       const backButton = document.getElementById("backButton");
       const simSizeSlider = document.getElementById("simSizeSlider");
       const simSizeDisplay = document.getElementById("simSizeDisplay");
-      
+
       simSizeSlider.addEventListener("input", () => {
         simSizeDisplay.innerText = simSizeSlider.value;
       });
-      
+
       optionsButton.addEventListener("click", () => {
         mainMenu.style.display = "none";
         optionsMenu.style.display = "flex";
       });
-      
+
       backButton.addEventListener("click", () => {
         cellSize = parseInt(simSizeSlider.value, 10);
         resizeCanvas();
         optionsMenu.style.display = "none";
         mainMenu.style.display = "flex";
       });
-      
+
       startButton.addEventListener("click", () => {
         mainMenu.style.display = "none";
         simulationLoop();
       });
-      
+
       // --- Mod Loader ---
       const modFileInput = document.getElementById("modFileInput");
       const loadModButton = document.getElementById("loadModButton");
-      
+
       loadModButton.addEventListener("click", () => {
         modFileInput.click();
       });
-      
+
       modFileInput.addEventListener("change", (e) => {
         const file = e.target.files[0];
         if (!file) return;
@@ -517,7 +573,6 @@
         };
         reader.readAsText(file);
       });
-      
     })();
   </script>
 </body>
