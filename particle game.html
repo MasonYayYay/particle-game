@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Optimized Sand Simulation with Adjustable Size</title>
+  <title>Optimized Sand Simulation with Mod Support</title>
   <style>
     body {
       margin: 0;
@@ -97,6 +97,8 @@
     <p>Paint elements and watch them interact.</p>
     <button id="startButton">Start Simulation</button>
     <button id="optionsButton">Options</button>
+    <button id="loadModButton">Load Mod</button>
+    <input type="file" id="modFileInput" accept=".js" style="display: none;">
   </div>
 
   <!-- Options Menu Overlay -->
@@ -138,15 +140,15 @@
     (function() {
       // --- Particle Type Constants ---
       const PARTICLE_EMPTY = 0;
-      const PARTICLE_SAND = 1;
+      const PARTICLE_SAND  = 1;
       const PARTICLE_WATER = 2;
-      const PARTICLE_ROCK = 3;
-      const PARTICLE_WOOD = 4;
-      const PARTICLE_FIRE = 5;
+      const PARTICLE_ROCK  = 3;
+      const PARTICLE_WOOD  = 4;
+      const PARTICLE_FIRE  = 5;
       const PARTICLE_SMOKE = 6;
-      const PARTICLE_SEED = 7;
+      const PARTICLE_SEED  = 7;
       const PARTICLE_PLANT = 8;
-      
+
       // Colors for each particle type (indices correspond to constants)
       const particleColors = [
         "#000000", // empty
@@ -159,8 +161,8 @@
         "#A0522D", // seed
         "#228B22"  // plant
       ];
-      
-      // Mapping from dropdown string to particle type constant
+
+      // Mapping from dropdown string to particle constant
       const particleMapping = {
         "sand": PARTICLE_SAND,
         "water": PARTICLE_WATER,
@@ -172,23 +174,39 @@
         "plant": PARTICLE_PLANT,
         "eraser": PARTICLE_EMPTY
       };
-      
+
+      // --- Mod API (Global Object) ---
+      window.ModAPI = {
+        updateHooks: [],
+        drawingHooks: [],
+        registerUpdateHook: function(hook) {
+          this.updateHooks.push(hook);
+        },
+        registerDrawingHook: function(hook) {
+          this.drawingHooks.push(hook);
+        },
+        getGrid: function() { return grid; },
+        getCols: function() { return cols; },
+        getRows: function() { return rows; },
+        getCellSize: function() { return cellSize; }
+      };
+
       // --- Simulation Variables ---
-      let cellSize = 8; // Default cell size (can be adjusted via options)
+      let cellSize = 8; // Default cell size (adjustable via options)
       let cols, rows;
-      let grid; // Will be a Uint8Array (flat grid of size rows*cols)
+      let grid; // Flat Uint8Array grid of size cols * rows
       let brushSize = 1; // In grid cells
       const maxBrushSize = 20;
-      
+
       const canvas = document.getElementById("simulationCanvas");
       const ctx = canvas.getContext("2d");
-      
+
       // --- Mouse and FPS State ---
       let mouseX = null, mouseY = null;
       let drawing = false;
       const fpsCounter = document.getElementById("fpsCounter");
       let lastFrameTime = performance.now();
-      
+
       // --- Grid Initialization ---
       function resizeCanvas() {
         canvas.width = window.innerWidth;
@@ -200,49 +218,42 @@
       }
       window.addEventListener("resize", resizeCanvas);
       resizeCanvas();
-      
+
       // --- Simulation Update (Flat Array Version) ---
       function updateGrid() {
-        // Loop from bottom (largest row index) to top.
+        // Process from bottom to top
         for (let r = rows - 1; r >= 0; r--) {
           for (let c = 0; c < cols; c++) {
             let i = r * cols + c;
             let type = grid[i];
             if (type === PARTICLE_EMPTY || type === PARTICLE_ROCK) continue;
-            
-            // Helper: index for cell at (nr, nc)
-            const index = (nr, nc) => nr * cols + nc;
-            
+
+            // Helper for index at (nr, nc)
+            const idx = (nr, nc) => nr * cols + nc;
+
             // Sand
             if (type === PARTICLE_SAND) {
               if (r + 1 < rows) {
-                let below = grid[index(r + 1, c)];
+                let below = grid[idx(r + 1, c)];
                 if (below === PARTICLE_EMPTY || below === PARTICLE_WATER) {
-                  // Swap with below
-                  grid[index(r + 1, c)] = PARTICLE_SAND;
+                  grid[idx(r + 1, c)] = PARTICLE_SAND;
                   grid[i] = below;
                 } else {
-                  // Try diagonals
-                  let move = false;
                   if (Math.random() < 0.5) {
-                    if (c - 1 >= 0 && grid[index(r + 1, c - 1)] === PARTICLE_EMPTY) {
-                      grid[index(r + 1, c - 1)] = PARTICLE_SAND;
+                    if (c - 1 >= 0 && grid[idx(r + 1, c - 1)] === PARTICLE_EMPTY) {
+                      grid[idx(r + 1, c - 1)] = PARTICLE_SAND;
                       grid[i] = PARTICLE_EMPTY;
-                      move = true;
-                    } else if (c + 1 < cols && grid[index(r + 1, c + 1)] === PARTICLE_EMPTY) {
-                      grid[index(r + 1, c + 1)] = PARTICLE_SAND;
+                    } else if (c + 1 < cols && grid[idx(r + 1, c + 1)] === PARTICLE_EMPTY) {
+                      grid[idx(r + 1, c + 1)] = PARTICLE_SAND;
                       grid[i] = PARTICLE_EMPTY;
-                      move = true;
                     }
                   } else {
-                    if (c + 1 < cols && grid[index(r + 1, c + 1)] === PARTICLE_EMPTY) {
-                      grid[index(r + 1, c + 1)] = PARTICLE_SAND;
+                    if (c + 1 < cols && grid[idx(r + 1, c + 1)] === PARTICLE_EMPTY) {
+                      grid[idx(r + 1, c + 1)] = PARTICLE_SAND;
                       grid[i] = PARTICLE_EMPTY;
-                      move = true;
-                    } else if (c - 1 >= 0 && grid[index(r + 1, c - 1)] === PARTICLE_EMPTY) {
-                      grid[index(r + 1, c - 1)] = PARTICLE_SAND;
+                    } else if (c - 1 >= 0 && grid[idx(r + 1, c - 1)] === PARTICLE_EMPTY) {
+                      grid[idx(r + 1, c - 1)] = PARTICLE_SAND;
                       grid[i] = PARTICLE_EMPTY;
-                      move = true;
                     }
                   }
                 }
@@ -250,24 +261,24 @@
             }
             // Water
             else if (type === PARTICLE_WATER) {
-              if (r + 1 < rows && grid[index(r + 1, c)] === PARTICLE_EMPTY) {
-                grid[index(r + 1, c)] = PARTICLE_WATER;
+              if (r + 1 < rows && grid[idx(r + 1, c)] === PARTICLE_EMPTY) {
+                grid[idx(r + 1, c)] = PARTICLE_WATER;
                 grid[i] = PARTICLE_EMPTY;
               } else {
                 if (Math.random() < 0.5) {
-                  if (c - 1 >= 0 && grid[index(r, c - 1)] === PARTICLE_EMPTY) {
-                    grid[index(r, c - 1)] = PARTICLE_WATER;
+                  if (c - 1 >= 0 && grid[idx(r, c - 1)] === PARTICLE_EMPTY) {
+                    grid[idx(r, c - 1)] = PARTICLE_WATER;
                     grid[i] = PARTICLE_EMPTY;
-                  } else if (c + 1 < cols && grid[index(r, c + 1)] === PARTICLE_EMPTY) {
-                    grid[index(r, c + 1)] = PARTICLE_WATER;
+                  } else if (c + 1 < cols && grid[idx(r, c + 1)] === PARTICLE_EMPTY) {
+                    grid[idx(r, c + 1)] = PARTICLE_WATER;
                     grid[i] = PARTICLE_EMPTY;
                   }
                 } else {
-                  if (c + 1 < cols && grid[index(r, c + 1)] === PARTICLE_EMPTY) {
-                    grid[index(r, c + 1)] = PARTICLE_WATER;
+                  if (c + 1 < cols && grid[idx(r, c + 1)] === PARTICLE_EMPTY) {
+                    grid[idx(r, c + 1)] = PARTICLE_WATER;
                     grid[i] = PARTICLE_EMPTY;
-                  } else if (c - 1 >= 0 && grid[index(r, c - 1)] === PARTICLE_EMPTY) {
-                    grid[index(r, c - 1)] = PARTICLE_WATER;
+                  } else if (c - 1 >= 0 && grid[idx(r, c - 1)] === PARTICLE_EMPTY) {
+                    grid[idx(r, c - 1)] = PARTICLE_WATER;
                     grid[i] = PARTICLE_EMPTY;
                   }
                 }
@@ -281,7 +292,7 @@
                   if (dr === 0 && dc === 0) continue;
                   let nr = r + dr, nc = c + dc;
                   if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) {
-                    if (grid[index(nr, nc)] === PARTICLE_FIRE) caughtFire = true;
+                    if (grid[idx(nr, nc)] === PARTICLE_FIRE) caughtFire = true;
                   }
                 }
               }
@@ -292,25 +303,24 @@
             }
             // Seed
             else if (type === PARTICLE_SEED) {
-              if (r + 1 < rows && grid[index(r + 1, c)] === PARTICLE_EMPTY && Math.random() < 0.3) {
-                grid[index(r + 1, c)] = PARTICLE_SEED;
+              if (r + 1 < rows && grid[idx(r + 1, c)] === PARTICLE_EMPTY && Math.random() < 0.3) {
+                grid[idx(r + 1, c)] = PARTICLE_SEED;
                 grid[i] = PARTICLE_EMPTY;
-              } else if ((r + 1 >= rows || grid[index(r + 1, c)] !== PARTICLE_EMPTY) && Math.random() < 0.01) {
+              } else if ((r + 1 >= rows || grid[idx(r + 1, c)] !== PARTICLE_EMPTY) && Math.random() < 0.01) {
                 grid[i] = PARTICLE_PLANT;
               }
             }
             // Plant
             else if (type === PARTICLE_PLANT) {
-              if (r - 1 >= 0 && grid[index(r - 1, c)] === PARTICLE_EMPTY && Math.random() < 0.005) {
-                grid[index(r - 1, c)] = PARTICLE_PLANT;
+              if (r - 1 >= 0 && grid[idx(r - 1, c)] === PARTICLE_EMPTY && Math.random() < 0.005) {
+                grid[idx(r - 1, c)] = PARTICLE_PLANT;
               }
-              // Spawn seed to left or right.
               const directions = [[0, -1], [0, 1]];
               for (let d of directions) {
                 let nr = r + d[0], nc = c + d[1];
                 if (nr >= 0 && nr < rows && nc >= 0 && nc < cols &&
-                    grid[index(nr, nc)] === PARTICLE_EMPTY && Math.random() < 0.002) {
-                  grid[index(nr, nc)] = PARTICLE_SEED;
+                    grid[idx(nr, nc)] === PARTICLE_EMPTY && Math.random() < 0.002) {
+                  grid[idx(nr, nc)] = PARTICLE_SEED;
                 }
               }
             }
@@ -322,7 +332,7 @@
                   if (dr === 0 && dc === 0) continue;
                   let nr = r + dr, nc = c + dc;
                   if (nr >= 0 && nr < rows && nc >= 0 && nc < cols) {
-                    if (grid[index(nr, nc)] === PARTICLE_WATER) adjacentWater = true;
+                    if (grid[idx(nr, nc)] === PARTICLE_WATER) adjacentWater = true;
                   }
                 }
               }
@@ -330,15 +340,15 @@
                 grid[i] = PARTICLE_SMOKE;
                 continue;
               }
-              if (r - 1 >= 0 && grid[index(r - 1, c)] === PARTICLE_EMPTY && Math.random() < 0.3) {
-                grid[index(r - 1, c)] = PARTICLE_FIRE;
+              if (r - 1 >= 0 && grid[idx(r - 1, c)] === PARTICLE_EMPTY && Math.random() < 0.3) {
+                grid[idx(r - 1, c)] = PARTICLE_FIRE;
                 grid[i] = PARTICLE_EMPTY;
               } else if (r - 1 >= 0 && Math.random() < 0.2) {
-                if (c - 1 >= 0 && grid[index(r - 1, c - 1)] === PARTICLE_EMPTY) {
-                  grid[index(r - 1, c - 1)] = PARTICLE_FIRE;
+                if (c - 1 >= 0 && grid[idx(r - 1, c - 1)] === PARTICLE_EMPTY) {
+                  grid[idx(r - 1, c - 1)] = PARTICLE_FIRE;
                   grid[i] = PARTICLE_EMPTY;
-                } else if (c + 1 < cols && grid[index(r - 1, c + 1)] === PARTICLE_EMPTY) {
-                  grid[index(r - 1, c + 1)] = PARTICLE_FIRE;
+                } else if (c + 1 < cols && grid[idx(r - 1, c + 1)] === PARTICLE_EMPTY) {
+                  grid[idx(r - 1, c + 1)] = PARTICLE_FIRE;
                   grid[i] = PARTICLE_EMPTY;
                 }
               }
@@ -348,15 +358,15 @@
             }
             // Smoke
             else if (type === PARTICLE_SMOKE) {
-              if (r - 1 >= 0 && grid[index(r - 1, c)] === PARTICLE_EMPTY && Math.random() < 0.3) {
-                grid[index(r - 1, c)] = PARTICLE_SMOKE;
+              if (r - 1 >= 0 && grid[idx(r - 1, c)] === PARTICLE_EMPTY && Math.random() < 0.3) {
+                grid[idx(r - 1, c)] = PARTICLE_SMOKE;
                 grid[i] = PARTICLE_EMPTY;
               } else if (r - 1 >= 0 && Math.random() < 0.1) {
-                if (c - 1 >= 0 && grid[index(r - 1, c - 1)] === PARTICLE_EMPTY) {
-                  grid[index(r - 1, c - 1)] = PARTICLE_SMOKE;
+                if (c - 1 >= 0 && grid[idx(r - 1, c - 1)] === PARTICLE_EMPTY) {
+                  grid[idx(r - 1, c - 1)] = PARTICLE_SMOKE;
                   grid[i] = PARTICLE_EMPTY;
-                } else if (c + 1 < cols && grid[index(r - 1, c + 1)] === PARTICLE_EMPTY) {
-                  grid[index(r - 1, c + 1)] = PARTICLE_SMOKE;
+                } else if (c + 1 < cols && grid[idx(r - 1, c + 1)] === PARTICLE_EMPTY) {
+                  grid[idx(r - 1, c + 1)] = PARTICLE_SMOKE;
                   grid[i] = PARTICLE_EMPTY;
                 }
               }
@@ -366,9 +376,11 @@
             }
           }
         }
+        // Call any registered mod update hooks
+        window.ModAPI.updateHooks.forEach(hook => hook(grid, cols, rows, cellSize));
       }
-      
-      // --- Rendering ---
+
+      // --- Rendering Functions ---
       function drawGrid() {
         for (let r = 0; r < rows; r++) {
           for (let c = 0; c < cols; c++) {
@@ -377,6 +389,8 @@
             ctx.fillRect(c * cellSize, r * cellSize, cellSize, cellSize);
           }
         }
+        // Call any mod drawing hooks
+        window.ModAPI.drawingHooks.forEach(hook => hook(ctx, grid, cols, rows, cellSize));
       }
       
       function drawBrushOverlay() {
@@ -389,7 +403,7 @@
         ctx.stroke();
       }
       
-      // --- Main Loop with FPS ---
+      // --- Main Simulation Loop with FPS ---
       function simulationLoop() {
         const now = performance.now();
         const delta = now - lastFrameTime;
@@ -410,8 +424,8 @@
         mouseY = e.clientY - rect.top;
         const c = Math.floor(mouseX / cellSize);
         const r = Math.floor(mouseY / cellSize);
-        let selectedType = document.getElementById("particleType").value;
-        selectedType = particleMapping[selectedType];
+        let selectedStr = document.getElementById("particleType").value;
+        let selectedType = particleMapping[selectedStr];
         const half = Math.floor(brushSize / 2);
         for (let i = r - half; i < r - half + brushSize; i++) {
           for (let j = c - half; j < c - half + brushSize; j++) {
@@ -482,6 +496,28 @@
         mainMenu.style.display = "none";
         simulationLoop();
       });
+      
+      // --- Mod Loader ---
+      const modFileInput = document.getElementById("modFileInput");
+      const loadModButton = document.getElementById("loadModButton");
+      
+      loadModButton.addEventListener("click", () => {
+        modFileInput.click();
+      });
+      
+      modFileInput.addEventListener("change", (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = function(evt) {
+          const script = document.createElement("script");
+          script.textContent = evt.target.result;
+          document.body.appendChild(script);
+          alert("Mod loaded!");
+        };
+        reader.readAsText(file);
+      });
+      
     })();
   </script>
 </body>
