@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Optimized Sand Simulation with Extended ModAPI</title>
+  <title>Particle game with Extended ModAPI & Optimizations</title>
   <style>
     body {
       margin: 0;
@@ -93,12 +93,10 @@
 <body>
   <!-- Main Menu Overlay -->
   <div id="mainMenu">
-    <h1>Sand Simulation</h1>
+    <h1>Particle game</h1>
     <p>Paint elements and watch them interact.</p>
     <button id="startButton">Start Simulation</button>
     <button id="optionsButton">Options</button>
-    <button id="loadModButton">Load Mod</button>
-    <input type="file" id="modFileInput" accept=".js" style="display: none;">
   </div>
 
   <!-- Options Menu Overlay -->
@@ -107,6 +105,8 @@
     <label for="simSizeSlider">Simulation Size (Cell Size): <span id="simSizeDisplay">8</span></label>
     <input type="range" id="simSizeSlider" min="4" max="20" value="8">
     <br>
+    <!-- Moved the Load Mod button here -->
+    <button id="loadModButton">Load Mod</button>
     <button id="backButton">Back</button>
   </div>
 
@@ -136,9 +136,20 @@
   <!-- Simulation Canvas -->
   <canvas id="simulationCanvas"></canvas>
   
+  <input type="file" id="modFileInput" accept=".js" style="display: none;">
+  
   <script>
     (function() {
-      // --- Particle Type Constants ---
+      // --- Helper Function: Shuffle an Array ---
+      function shuffleArray(arr) {
+        for (let i = arr.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [arr[i], arr[j]] = [arr[j], arr[i]];
+        }
+        return arr;
+      }
+      
+      // --- Particle Type Constants (Built‑in) ---
       const PARTICLE_EMPTY = 0;
       const PARTICLE_SAND  = 1;
       const PARTICLE_WATER = 2;
@@ -148,10 +159,10 @@
       const PARTICLE_SMOKE = 6;
       const PARTICLE_SEED  = 7;
       const PARTICLE_PLANT = 8;
-      // New particle types registered by mods will get constants starting at index 9.
-      
-      // Colors for built‑in particle types
-      const particleColors = [
+      // New modded particles will start at index 9.
+
+      // Built‑in colors (hex strings)
+      const builtInColors = [
         "#000000", // empty
         "#c2b280", // sand
         "#3498db", // water
@@ -162,6 +173,19 @@
         "#A0522D", // seed
         "#228B22"  // plant
       ];
+      
+      // Helper: Convert hex color to [r, g, b, a]
+      function hexToRgba(hex) {
+        if (hex.charAt(0) === "#") hex = hex.slice(1);
+        let bigint = parseInt(hex, 16);
+        let r = (bigint >> 16) & 255;
+        let g = (bigint >> 8) & 255;
+        let b = bigint & 255;
+        return [r, g, b, 255];
+      }
+      
+      // Precompute RGBA arrays for built‑in colors.
+      const particleColors = builtInColors.map(hexToRgba);
       
       // Mapping from dropdown string to built‑in particle constant
       const particleMapping = {
@@ -180,14 +204,10 @@
       window.ModAPI = {
         updateHooks: [],
         drawingHooks: [],
-        // Hooks for modded particle types: key = particle constant
         particleUpdates: {},
         particleDrawings: {},
-        // Settings dictionary for mod settings
         settings: {},
-        // Menus: store mod-added menus
         menus: {},
-        
         registerUpdateHook: function(hook) {
           this.updateHooks.push(hook);
         },
@@ -195,7 +215,6 @@
           this.drawingHooks.push(hook);
         },
         addMenu: function(menuId, menuTitle, menuContentHTML) {
-          // Create a new overlay menu div with a close button.
           const menuDiv = document.createElement("div");
           menuDiv.id = "modMenu_" + menuId;
           menuDiv.style.position = "fixed";
@@ -218,16 +237,14 @@
         },
         addSetting: function(settingName, defaultValue, onChange) {
           this.settings[settingName] = defaultValue;
-          // Provide a function to update the setting and call onChange if provided.
           this.settings[settingName + "_set"] = function(newValue) {
             window.ModAPI.settings[settingName] = newValue;
             if (onChange) onChange(newValue);
           };
         },
         registerParticleType: function(name, color, updateFunction, drawingFunction) {
-          // Assign a new constant to this particle type.
           const newConstant = particleColors.length;
-          particleColors.push(color);
+          particleColors.push(hexToRgba(color));
           particleMapping[name] = newConstant;
           this.particleUpdates[newConstant] = updateFunction;
           this.particleDrawings[newConstant] = drawingFunction;
@@ -249,11 +266,18 @@
       const canvas = document.getElementById("simulationCanvas");
       const ctx = canvas.getContext("2d");
 
+      // --- Offscreen Canvas for Optimized Rendering ---
+      let offscreenCanvas = document.createElement("canvas");
+      let offscreenCtx = offscreenCanvas.getContext("2d");
+
       // --- Mouse and FPS State ---
       let mouseX = null, mouseY = null;
       let drawing = false;
       const fpsCounter = document.getElementById("fpsCounter");
       let lastFrameTime = performance.now();
+
+      // --- Simulation Pause State ---
+      let simulationPaused = false;
 
       // --- Grid Initialization ---
       function resizeCanvas() {
@@ -263,19 +287,20 @@
         rows = Math.floor(canvas.height / cellSize);
         grid = new Uint8Array(cols * rows);
         grid.fill(PARTICLE_EMPTY);
+        offscreenCanvas.width = cols;
+        offscreenCanvas.height = rows;
       }
       window.addEventListener("resize", resizeCanvas);
       resizeCanvas();
 
       // --- Simulation Update (Flat Array Version) ---
       function updateGrid() {
-        // Process from bottom (largest row index) to top.
+        if (simulationPaused) return;
         for (let r = rows - 1; r >= 0; r--) {
           for (let c = 0; c < cols; c++) {
             let i = r * cols + c;
             let type = grid[i];
             if (type === PARTICLE_EMPTY || type === PARTICLE_ROCK) continue;
-            // Helper: index for (nr, nc)
             const idx = (nr, nc) => nr * cols + nc;
 
             // Sand
@@ -286,21 +311,12 @@
                   grid[idx(r + 1, c)] = PARTICLE_SAND;
                   grid[i] = below;
                 } else {
-                  if (Math.random() < 0.5) {
-                    if (c - 1 >= 0 && grid[idx(r + 1, c - 1)] === PARTICLE_EMPTY) {
-                      grid[idx(r + 1, c - 1)] = PARTICLE_SAND;
+                  let directions = shuffleArray([-1, 1]);
+                  for (let d of directions) {
+                    if (r + 1 < rows && c + d >= 0 && c + d < cols && grid[idx(r + 1, c + d)] === PARTICLE_EMPTY) {
+                      grid[idx(r + 1, c + d)] = PARTICLE_SAND;
                       grid[i] = PARTICLE_EMPTY;
-                    } else if (c + 1 < cols && grid[idx(r + 1, c + 1)] === PARTICLE_EMPTY) {
-                      grid[idx(r + 1, c + 1)] = PARTICLE_SAND;
-                      grid[i] = PARTICLE_EMPTY;
-                    }
-                  } else {
-                    if (c + 1 < cols && grid[idx(r + 1, c + 1)] === PARTICLE_EMPTY) {
-                      grid[idx(r + 1, c + 1)] = PARTICLE_SAND;
-                      grid[i] = PARTICLE_EMPTY;
-                    } else if (c - 1 >= 0 && grid[idx(r + 1, c - 1)] === PARTICLE_EMPTY) {
-                      grid[idx(r + 1, c - 1)] = PARTICLE_SAND;
-                      grid[i] = PARTICLE_EMPTY;
+                      break;
                     }
                   }
                 }
@@ -312,21 +328,12 @@
                 grid[idx(r + 1, c)] = PARTICLE_WATER;
                 grid[i] = PARTICLE_EMPTY;
               } else {
-                if (Math.random() < 0.5) {
-                  if (c - 1 >= 0 && grid[idx(r, c - 1)] === PARTICLE_EMPTY) {
-                    grid[idx(r, c - 1)] = PARTICLE_WATER;
+                let directions = shuffleArray([-1, 1]);
+                for (let d of directions) {
+                  if (c + d >= 0 && c + d < cols && grid[idx(r, c + d)] === PARTICLE_EMPTY) {
+                    grid[idx(r, c + d)] = PARTICLE_WATER;
                     grid[i] = PARTICLE_EMPTY;
-                  } else if (c + 1 < cols && grid[idx(r, c + 1)] === PARTICLE_EMPTY) {
-                    grid[idx(r, c + 1)] = PARTICLE_WATER;
-                    grid[i] = PARTICLE_EMPTY;
-                  }
-                } else {
-                  if (c + 1 < cols && grid[idx(r, c + 1)] === PARTICLE_EMPTY) {
-                    grid[idx(r, c + 1)] = PARTICLE_WATER;
-                    grid[i] = PARTICLE_EMPTY;
-                  } else if (c - 1 >= 0 && grid[idx(r, c - 1)] === PARTICLE_EMPTY) {
-                    grid[idx(r, c - 1)] = PARTICLE_WATER;
-                    grid[i] = PARTICLE_EMPTY;
+                    break;
                   }
                 }
               }
@@ -343,7 +350,7 @@
                   }
                 }
               }
-              if (caughtFire && Math.random() < 0.02) {
+              if (caughtFire && Math.random() < 0.005) {
                 grid[i] = PARTICLE_FIRE;
                 continue;
               }
@@ -371,7 +378,7 @@
                 }
               }
             }
-            // Fire
+            // Fire (Sandspiel-like behavior)
             else if (type === PARTICLE_FIRE) {
               let adjacentWater = false;
               for (let dr = -1; dr <= 1 && !adjacentWater; dr++) {
@@ -383,13 +390,14 @@
                   }
                 }
               }
-              if (adjacentWater && Math.random() < 0.1) {
+              if (adjacentWater && Math.random() < 0.3) {
                 grid[i] = PARTICLE_SMOKE;
                 continue;
               }
               if (r - 1 >= 0 && grid[idx(r - 1, c)] === PARTICLE_EMPTY && Math.random() < 0.3) {
                 grid[idx(r - 1, c)] = PARTICLE_FIRE;
                 grid[i] = PARTICLE_EMPTY;
+                continue;
               } else if (r - 1 >= 0 && Math.random() < 0.2) {
                 if (c - 1 >= 0 && grid[idx(r - 1, c - 1)] === PARTICLE_EMPTY) {
                   grid[idx(r - 1, c - 1)] = PARTICLE_FIRE;
@@ -421,31 +429,30 @@
                 grid[i] = PARTICLE_EMPTY;
               }
             }
-            // If the particle type is modded (not built‑in)...
+            // Modded particle update
             else if (ModAPI.particleUpdates[type]) {
-              // Call the mod update function, providing cell coordinates and helper idx.
               ModAPI.particleUpdates[type](r, c, grid, cols, rows, idx);
             }
           }
         }
-        // Call any registered global mod update hooks.
         ModAPI.updateHooks.forEach(hook => hook(grid, cols, rows, cellSize));
       }
 
-      // --- Rendering Functions ---
+      // --- Optimized Rendering Using an Offscreen Canvas ---
       function drawGrid() {
-        for (let r = 0; r < rows; r++) {
-          for (let c = 0; c < cols; c++) {
-            const i = r * cols + c;
-            ctx.fillStyle = particleColors[grid[i]];
-            ctx.fillRect(c * cellSize, r * cellSize, cellSize, cellSize);
-            // If there is a mod drawing hook for this particle type, call it.
-            if (ModAPI.particleDrawings[grid[i]]) {
-              ModAPI.particleDrawings[grid[i]](ctx, r, c, cellSize);
-            }
-          }
+        let imageData = offscreenCtx.createImageData(cols, rows);
+        let data = imageData.data;
+        for (let i = 0; i < grid.length; i++) {
+          let type = grid[i];
+          let color = particleColors[type];
+          data[i * 4 + 0] = color[0];
+          data[i * 4 + 1] = color[1];
+          data[i * 4 + 2] = color[2];
+          data[i * 4 + 3] = color[3];
         }
-        // Call any global mod drawing hooks.
+        offscreenCtx.putImageData(imageData, 0, 0);
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(offscreenCanvas, 0, 0, cols, rows, 0, 0, cols * cellSize, rows * cellSize);
         ModAPI.drawingHooks.forEach(hook => hook(ctx, grid, cols, rows, cellSize));
       }
 
@@ -461,6 +468,7 @@
 
       // --- Main Simulation Loop with FPS ---
       function simulationLoop() {
+        if (simulationPaused) return;
         const now = performance.now();
         const delta = now - lastFrameTime;
         const fps = 1000 / delta;
@@ -523,6 +531,27 @@
         grid.fill(PARTICLE_EMPTY);
       });
 
+      // --- Continuous Painting When Mouse is Held Down ---
+      function paintAtCoordinates(x, y) {
+        const c = Math.floor(x / cellSize);
+        const r = Math.floor(y / cellSize);
+        let selectedStr = document.getElementById("particleType").value;
+        let selectedType = particleMapping[selectedStr];
+        const half = Math.floor(brushSize / 2);
+        for (let i = r - half; i < r - half + brushSize; i++) {
+          for (let j = c - half; j < c - half + brushSize; j++) {
+            if (i >= 0 && i < rows && j >= 0 && j < cols) {
+              grid[i * cols + j] = selectedType;
+            }
+          }
+        }
+      }
+      setInterval(() => {
+        if (drawing && mouseX !== null && mouseY !== null) {
+          paintAtCoordinates(mouseX, mouseY);
+        }
+      }, 50);
+
       // --- Main Menu and Options ---
       const mainMenu = document.getElementById("mainMenu");
       const optionsMenu = document.getElementById("optionsMenu");
@@ -549,8 +578,17 @@
       });
 
       startButton.addEventListener("click", () => {
+        simulationPaused = false;
         mainMenu.style.display = "none";
         simulationLoop();
+      });
+
+      // --- Quick Return to Main Menu (Press Escape) ---
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") {
+          simulationPaused = true;
+          mainMenu.style.display = "flex";
+        }
       });
 
       // --- Mod Loader ---
